@@ -10,7 +10,7 @@ describe("agentEnv", () => {
     expect(a.length).toBeGreaterThanOrEqual(40);
   });
 
-  it("forwards runtime + agent creds and the LO_* callback vars", () => {
+  it("forwards allowlisted runtime vars, accepted agent creds, and the LO_* callback vars", () => {
     const env = buildAgentEnv({
       base: { PATH: "/usr/bin", HOME: "/home/me", GITHUB_TOKEN: "ght", ANTHROPIC_API_KEY: "ak" },
       runId: "r1",
@@ -26,23 +26,33 @@ describe("agentEnv", () => {
     expect(env.LO_CALLBACK_TOKEN).toBe("tok");
   });
 
-  it("strips LO operator, Linear, and webhook secrets from the child env", () => {
+  it("denies unknown/secret-like vars by default (allowlist, not denylist)", () => {
     const env = buildAgentEnv({
       base: {
         PATH: "/usr/bin",
         LO_API_TOKEN: "op-secret",
         LINEAR_API_KEY: "lin-secret",
-        LINEAR_WEBHOOK_SECRET: "lin-wh",
-        GITHUB_WEBHOOK_SECRET: "gh-wh",
+        OPENAI_API_KEY: "oai",
+        AWS_SECRET_ACCESS_KEY: "aws",
+        NPM_TOKEN: "npm",
+        DATABASE_URL: "postgres://secret",
+        SOME_OTHER_TOKEN: "x",
       },
       runId: "r1",
       callbackUrl: "http://localhost:3000/api/runs/r1",
       callbackToken: "tok",
     });
-    expect(env.LO_API_TOKEN).toBeUndefined();
-    expect(env.LINEAR_API_KEY).toBeUndefined();
-    expect(env.LINEAR_WEBHOOK_SECRET).toBeUndefined();
-    expect(env.GITHUB_WEBHOOK_SECRET).toBeUndefined();
-    expect(env.PATH).toBe("/usr/bin"); // non-secret runtime vars still pass through
+    expect(env.PATH).toBe("/usr/bin"); // allowlisted runtime var passes
+    for (const k of [
+      "LO_API_TOKEN",
+      "LINEAR_API_KEY",
+      "OPENAI_API_KEY",
+      "AWS_SECRET_ACCESS_KEY",
+      "NPM_TOKEN",
+      "DATABASE_URL",
+      "SOME_OTHER_TOKEN",
+    ]) {
+      expect(env[k]).toBeUndefined();
+    }
   });
 });

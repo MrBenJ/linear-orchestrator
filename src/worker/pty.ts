@@ -10,7 +10,7 @@ export interface PtyHandle {
 
 export interface PtySpawnOptions {
   cwd: string;
-  env: NodeJS.ProcessEnv;
+  env: Record<string, string | undefined>;
 }
 
 export interface PtySpawner {
