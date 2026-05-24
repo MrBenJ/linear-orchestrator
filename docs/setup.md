@@ -5,6 +5,7 @@
 ```
 LINEAR_API_KEY=lin_api_...
 LINEAR_WEBHOOK_SECRET=...
+LO_API_TOKEN=<random secret; required as `Authorization: Bearer` on POST /api/tickets>
 LO_PORT=3000
 ```
 
@@ -39,6 +40,7 @@ team's workflow states. Until then, fill them in by hand from Linear's settings.
 2. ```
    curl -X POST localhost:3000/api/tickets \
      -H 'content-type: application/json' \
+     -H "authorization: Bearer $LO_API_TOKEN" \
      -d '{"tickets":[{"linearTeamId":"<team>","linearProjectId":"<project>","title":"LO test","prompt":"noop","harness":"claude-code"}]}'
    ```
-3. Confirm a new Linear issue appears in your "in progress" state and the response returns its identifier.
+3. Confirm a new Linear issue appears in your "in progress" state and the response returns its identifier under `tickets`. A `502` with an `errors` array means one or more tickets failed (e.g. Linear rejected the issue); partially-created tickets are still listed under `tickets`.

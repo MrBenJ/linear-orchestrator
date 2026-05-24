@@ -17,9 +17,16 @@ export class FakeLinearGateway implements LinearGateway {
     url: "https://linear.app/acme/issue/ENG-1",
   };
   failCreate = false;
+  /** Throw on the Nth createIssue call (1-based); null disables. */
+  failCreateOnCall: number | null = null;
+  failStateUpdate = false;
+  createCallCount = 0;
 
   async createIssue(input: CreateIssueInput): Promise<CreatedIssue> {
-    if (this.failCreate) throw new Error("simulated Linear failure");
+    this.createCallCount += 1;
+    if (this.failCreate || this.createCallCount === this.failCreateOnCall) {
+      throw new Error("simulated Linear createIssue failure");
+    }
     this.createdIssues.push(input);
     return this.nextIssue;
   }
@@ -27,6 +34,7 @@ export class FakeLinearGateway implements LinearGateway {
     return this.states;
   }
   async updateIssueState(issueId: string, stateId: string): Promise<void> {
+    if (this.failStateUpdate) throw new Error("simulated state update failure");
     this.stateUpdates.push({ issueId, stateId });
   }
   async ensureLabel(_teamId: string, name: string): Promise<string> {
