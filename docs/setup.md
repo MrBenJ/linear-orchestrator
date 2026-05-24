@@ -44,3 +44,36 @@ team's workflow states. Until then, fill them in by hand from Linear's settings.
      -d '{"tickets":[{"linearTeamId":"<team>","linearProjectId":"<project>","title":"LO test","prompt":"noop","harness":"claude-code"}]}'
    ```
 3. Confirm a new Linear issue appears in your "in progress" state and the response returns its identifier under `tickets`. A `502` with an `errors` array means one or more tickets failed (e.g. Linear rejected the issue); partially-created tickets are still listed under `tickets`.
+
+## Running the worker (Phase 1b)
+
+LO is two processes: the Next.js HTTP server and the `lo-worker` that supervises agents.
+
+```bash
+pnpm dev:all      # runs next dev + tsx watch src/worker/index.ts together
+# or separately:
+pnpm dev:web
+pnpm dev:worker
+```
+
+The worker claims queued runs (up to `concurrencyCap`), creates a worktree under
+`~/.linear-orchestrator/worktrees/<run-id>`, spawns `claude-code` via node-pty, and
+reaps on timeout / heartbeat-loss / cancel. Agents call back to:
+
+- `POST /api/runs/:id/heartbeat` and `POST /api/runs/:id/complete` — authed with the
+  per-run `LO_CALLBACK_TOKEN` injected into the agent's environment.
+- `POST /api/runs/:id/cancel` — operator-only, authed with `LO_API_TOKEN`.
+
+Observe runs with the CLI:
+
+```bash
+pnpm lo status
+pnpm lo logs <run-id> --from 0
+pnpm lo kill <run-id>
+pnpm lo config
+```
+
+> **node-pty note:** pnpm strips the executable bit from node-pty's prebuilt
+> `spawn-helper`, which makes the worker fail with `posix_spawnp failed`. A
+> `postinstall` hook (`scripts/fix-node-pty-perms.mjs`) restores it automatically on
+> every `pnpm install`.

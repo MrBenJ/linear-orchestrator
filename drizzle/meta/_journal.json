@@ -8,6 +8,13 @@
       "when": 1779651367478,
       "tag": "0000_reflective_scorpion",
       "breakpoints": true
+    },
+    {
+      "idx": 1,
+      "version": "6",
+      "when": 1779654944142,
+      "tag": "0001_same_celestials",
+      "breakpoints": true
     }
   ]
 }
