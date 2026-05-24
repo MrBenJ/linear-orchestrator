@@ -64,10 +64,10 @@ Note that LO **does** spawn `claude-code -p` for autonomous work — that consum
 
 - **Secrets**: `.env.local` in the LO repo. `LINEAR_API_KEY`, `LINEAR_WEBHOOK_SECRET`, `GITHUB_TOKEN`, `ANTHROPIC_API_KEY`. Never committed.
 - **Runtime config**: `~/.linear-orchestrator/config.json`. Project→repo mapping, concurrency cap, default timeouts. Editable via API later.
-- **Webhook ingress**: ngrok or cloudflared tunnel. Tunnel URL is registered manually with Linear's webhook config. The tunnel must run alongside LO.
+- **Webhook ingress**: ngrok or cloudflared tunnel, shared by two webhook sources. Linear → `/api/webhooks/linear` (state-sync, audit). GitHub → `/api/webhooks/github` (PR merge → drives ticket to `done`). Both registered manually against the tunnel URL. The tunnel must run alongside LO.
 - **Observability**: every PTY stream is persisted as ordered chunks in SQLite (`agent_logs`) for replay. SSE endpoint serves them to the future UI. Until the UI exists, a `lo logs <run-id>` CLI is sufficient.
 - **Failure modes**: any unhandled agent failure → run marked failed → LO applies a `lo:needs-human` **label** (not a workflow state) and posts the last 50 log lines as a comment. No auto-retry in any phase.
-- **Linear state mapping**: Linear workflow states are custom per-team, so LO never hardcodes state names. It resolves semantic states (`inProgress`, `inReview`, `done`) to concrete state IDs per team via a config `stateMap` (auto-discovered, user-overridable). Orchestration signals use labels, not states. The user does not run Linear's GitHub integration, so LO drives all transitions itself and learns about merges from the agent's status callback (not from Linear).
+- **Linear state mapping**: Linear workflow states are custom per-team, so LO never hardcodes state names. It resolves semantic states (`inProgress`, `inReview`, `done`) to concrete state IDs per team via a config `stateMap` (auto-discovered, user-overridable). Orchestration signals use labels, not states. The user does not run Linear's GitHub integration, so LO drives all transitions itself: `inProgress`/`inReview` from agent signals, and `done` from a GitHub→LO PR-merge webhook (reliable whether code-task auto-merges or a human merges).
 
 ## Phasing
 
@@ -95,7 +95,7 @@ Note that LO **does** spawn `claude-code -p` for autonomous work — that consum
 | Repo mapping | Linear project → repo path (config) | One LO handles all projects; ticket inherits repo from project |
 | State mapping | Linear team → `{inProgress, inReview, done}` state IDs (config, auto-discovered) | Linear states are custom per-team; never hardcode names |
 | Exception signals | Labels (`lo:needs-human`), not workflow states | Labels are universal and API-creatable; states would require user to maintain matching workflow |
-| Transition ownership | LO drives all transitions; merge learned from agent callback | User doesn't run Linear's GitHub integration |
+| Transition ownership | LO drives all transitions; `done` via GitHub PR-merge webhook | User doesn't run Linear's GitHub integration; merge behavior is configurable |
 | Concurrency | Configurable cap, isolated worktrees | Allows fan-out without collisions; cap protects the box |
 | Webhook ingress | ngrok / cloudflared tunnel | Standard, well-supported, free tier |
 | Runtime shape | Separate worker process | HTTP can restart without killing agents |

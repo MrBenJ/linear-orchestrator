@@ -13,17 +13,18 @@ The end-to-end backbone of Linear Orchestrator. After Phase 1, a ticket created 
 1. Next.js 15 app (App Router) — HTTP layer only
 2. Separate `lo-worker` Node process — owns agent lifecycle
 3. SQLite store via Drizzle ORM
-4. Linear API client (create ticket, transition state, post comment)
+4. Linear API client (create ticket, transition state, manage labels, post comment)
 5. Linear webhook receiver with HMAC signature verification
-6. `claude-code` agent runner (codex deferred to Phase 1.5)
-7. `node-pty`-based agent capture
-8. Git worktree management
-9. Configurable concurrency cap
-10. Per-run timeout + heartbeat-based liveness
-11. Status callback API
-12. Config loading (`~/.linear-orchestrator/config.json`)
-13. Minimal CLI: `lo logs <run-id>`, `lo status`, `lo kill <run-id>`
-14. Unit + integration tests
+6. GitHub webhook receiver (PR merge events) → drives ticket to `done`
+7. `claude-code` agent runner (codex deferred to Phase 1.5)
+8. `node-pty`-based agent capture
+9. Git worktree management
+10. Configurable concurrency cap
+11. Per-run timeout + heartbeat-based liveness
+12. Status callback API
+13. Config loading (`~/.linear-orchestrator/config.json`)
+14. Minimal CLI: `lo logs <run-id>`, `lo status`, `lo kill <run-id>`, `lo linear bootstrap`
+15. Unit + integration tests
 
 ### Out of scope (Phase 1)
 
@@ -48,7 +49,7 @@ The end-to-end backbone of Linear Orchestrator. After Phase 1, a ticket created 
 | Repo mapping | `linearProjectId → repoPath`, defined in config file |
 | State mapping | `linearTeamId → { inProgress, inReview, done }` mapped to that team's workflow-state IDs. Auto-discovered, user-overridable. No hardcoded state names. |
 | Orchestration signals | Failure/timeout/needs-human are **labels** (`lo:needs-human`), not workflow states — labels are universal and API-creatable. States express workflow position; labels express LO metadata. |
-| Transition ownership | LO drives all transitions (user does not use Linear's GitHub integration): `inProgress` on start, `inReview` on PR-open, `done` on merge — merge learned from the agent's status callback. |
+| Transition ownership | LO drives all transitions (user does not use Linear's GitHub integration): `inProgress` on start, `inReview` on PR-open. `done` is driven by a **GitHub→LO webhook** on PR merge — reliable whether `/code-task` auto-merges or a human merges later. |
 | Concurrency | Single integer cap in config, default 2 |
 | Webhook ingress | External tunnel (ngrok/cloudflared), user-managed |
 | Branch naming | `lo/<ticket-identifier>-<short-run-id>` (e.g., `lo/ENG-123-7a3f`) — allows manual re-runs without branch collisions |
@@ -65,6 +66,7 @@ Two processes, one DB, one config file.
 │ Next.js (HTTP)                       │
 │  - POST /api/tickets                 │
 │  - POST /api/webhooks/linear         │
+│  - POST /api/webhooks/github         │
 │  - POST /api/runs/:id/complete       │
 │  - POST /api/runs/:id/heartbeat      │
 │  - GET  /api/runs/:id                │
@@ -132,6 +134,9 @@ Tables (Drizzle schema lives in `src/db/schema.ts`):
 | `completed_at` | integer | nullable |
 | `exit_code` | integer | nullable |
 | `result` | text (JSON) | nullable; from status callback |
+| `pr_url` | text | nullable; reported by status callback |
+| `pr_number` | integer | nullable; parsed from `pr_url`; used to match GitHub merge webhooks |
+| `pr_state` | text | nullable; `open`, `merged` |
 | `failure_reason` | text | nullable; freeform |
 | `callback_token` | text | random secret passed to the agent; required on callbacks |
 
@@ -220,6 +225,16 @@ Verifies HMAC against `LINEAR_WEBHOOK_SECRET`. Phase 1 handles only:
 
 Unknown events are logged and acknowledged with `200`.
 
+### `POST /api/webhooks/github`
+
+Verifies HMAC (`X-Hub-Signature-256`) against `GITHUB_WEBHOOK_SECRET`. Phase 1 handles only:
+
+- `pull_request` events with `action: closed` and `merged: true`. LO matches the PR to a ticket by `pr_number` + repo (stored on the run from the status callback; falls back to matching the head branch `lo/<identifier>-<short-run-id>`). On match: set `runs.pr_state = merged` and transition the ticket to the team's `done` state.
+
+This is the authoritative `done` signal and works whether `/code-task` auto-merged or a human merged later. The handler is a lightweight state-flip — it needs only the stored PR linkage, not the worktree (which may already be cleaned). Unmatched or unknown events → logged, `200`.
+
+The user registers this webhook on the relevant GitHub repos (or org), pointing at the same tunnel as Linear's, path `/api/webhooks/github`.
+
 ### `POST /api/runs/:id/heartbeat`
 
 Called by the spawned agent. Authenticated by header `Authorization: Bearer <callback_token>`.
@@ -247,11 +262,12 @@ Called by the spawned agent. Authenticated by `callback_token`.
 **Behavior:**
 1. Validate bearer token against `runs.callback_token`.
 2. Update `runs.result` and `runs.completed_at`. The run's `status` column moves to `completed` when the callback body's `status` is `"success"`, otherwise to `failed`.
-3. Drive the Linear ticket based on the outcome, using the team's `stateMap`:
+3. Store PR linkage: set `runs.pr_url`, parse and set `runs.pr_number`, set `runs.pr_state` (`merged` if `prMerged`, else `open`).
+4. Drive the Linear ticket based on the outcome, using the team's `stateMap`:
    - `status: success` + `prMerged: true` → transition to `done`.
-   - `status: success` + `prMerged: false` (PR open / merge-ready, awaiting human merge) → transition to `inReview`. (Re-detecting the eventual human merge is out of scope for Phase 1 — see Open items. In the autonomous pipeline, `/code-task` is expected to auto-merge once Aria approves, so this branch is the exception.)
+   - `status: success` + `prMerged: false` (PR open / merge-ready) → transition to `inReview`. The eventual merge — whether by `/code-task` later or by a human — is detected by the GitHub merge webhook, which then drives the ticket to `done`.
    - `status: failure` → apply the `needsHuman` label, leave the workflow state where it is, and post `summary` + `notes` as a Linear comment.
-4. The worker observes the row's status change on its next poll and reaps the child process if it's still alive.
+5. The worker observes the row's status change on its next poll and reaps the child process if it's still alive.
 
 ### `GET /api/runs/:id` and `GET /api/runs/:id/logs`
 
@@ -377,6 +393,7 @@ See **Linear workflow state mapping** below for how `stateMap` values are discov
 LINEAR_API_KEY=...
 LINEAR_WEBHOOK_SECRET=...
 GITHUB_TOKEN=...
+GITHUB_WEBHOOK_SECRET=...
 ANTHROPIC_API_KEY=...
 LO_PORT=3000
 ```
@@ -443,7 +460,7 @@ These are decided in this spec; calling out so they're not surprises during impl
 - **Single harness (claude-code).** Codex deferred to Phase 1.5 once the spawn-strategy interface is settled.
 - **Worktree retention on failure = 7 days.** GC sweep runs on worker startup.
 - **State names are never hardcoded.** Transitions resolve through the per-team `stateMap`. Exceptions are labels, not states.
-- **Merge detection for human-merged PRs is out of scope for Phase 1.** If `/code-task` leaves a PR open rather than auto-merging, LO parks the ticket in `inReview` and stops tracking. Re-detecting a later human merge requires a GitHub→LO webhook (independent of Linear, since the GitHub integration isn't used) — that arrives with the Phase 3 QA flow, which is fundamentally triggered "on merge" and needs the same signal.
+- **Merge detection is in Phase 1 via a GitHub→LO webhook.** Because merge behavior is configurable (sometimes `/code-task` auto-merges, sometimes a human merges), `done` is driven by the GitHub `pull_request` merge event, not by guessing from the status callback alone. This is independent of Linear (the GitHub integration isn't used). The same webhook will be reused by the Phase 3 QA flow, which triggers on merge.
 
 ## Acceptance criteria
 
@@ -454,9 +471,10 @@ Phase 1 is done when:
 3. The agent's PTY output is fully captured in `agent_logs` and replayable via `lo logs <run-id>`.
 4. The agent's heartbeat and status callbacks are authenticated and updates flow to the DB.
 5. A run that exceeds its timeout is killed and recorded as `timed_out`.
-6. A run that completes (callback `status: success`, `prMerged: true`) transitions the ticket to the team's mapped `done` state and removes its worktree. A `prMerged: false` success parks it in `inReview`.
-7. A failed run leaves the worktree intact for 7 days, applies the `lo:needs-human` label, and posts a Linear comment.
-8. Concurrency cap of 2 is enforced — three queued runs at once result in 2 running + 1 queued.
-9. State transitions resolve through the per-team `stateMap`; `lo linear bootstrap` produces a usable mapping from a real team's workflow states, and ticket creation is rejected for a team with no resolvable mapping.
-10. Integration test suite passes against the in-memory DB and echo agent.
-11. A manual smoke test against a real Linear sandbox and a real claude-code run completes end-to-end.
+6. A run that completes (callback `status: success`, `prMerged: true`) transitions the ticket to the team's mapped `done` state and removes its worktree. A `prMerged: false` success parks it in `inReview` and stores PR linkage on the run.
+7. A `pull_request` merge webhook for a parked ticket transitions it to `done` — matched by stored `pr_number`/repo (or head branch fallback), with HMAC verified.
+8. A failed run leaves the worktree intact for 7 days, applies the `lo:needs-human` label, and posts a Linear comment.
+9. Concurrency cap of 2 is enforced — three queued runs at once result in 2 running + 1 queued.
+10. State transitions resolve through the per-team `stateMap`; `lo linear bootstrap` produces a usable mapping from a real team's workflow states, and ticket creation is rejected for a team with no resolvable mapping.
+11. Integration test suite passes against the in-memory DB and echo agent.
+12. A manual smoke test against a real Linear sandbox and a real claude-code run completes end-to-end, including the GitHub merge webhook driving `done`.
