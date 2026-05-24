@@ -59,4 +59,20 @@ describe("handleComplete", () => {
     const res = await handleComplete(req("tok", { status: "success", prMerged: true }), "ghost", { db, config, linear });
     expect(res.status).toBe(404);
   });
+
+  it("keeps the run terminal and does not 500 when the Linear update fails", async () => {
+    const { db, runId, config, linear } = setup();
+    linear.failStateUpdate = true; // simulate Linear being down
+    const res = await handleComplete(
+      req("tok", { status: "success", prUrl: "https://github.com/o/r/pull/9", prMerged: true }),
+      runId,
+      { db, config, linear },
+    );
+    // The run genuinely finished; we must not 500 (which would invite a retry
+    // that double-applies). The Linear-sync failure is recorded instead.
+    expect(res.status).toBe(200);
+    const { run } = getRunWithTicket(db, runId)!;
+    expect(run.status).toBe("completed");
+    expect(run.failureReason).toMatch(/linear sync failed/i);
+  });
 });

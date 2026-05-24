@@ -1,8 +1,10 @@
 import { timingSafeEqual } from "node:crypto";
+import { eq } from "drizzle-orm";
 import { z } from "zod";
 import type { DB } from "@/db/client";
 import type { Config } from "@/config/types";
 import { resolveStateMap } from "@/config";
+import { runs } from "@/db/schema";
 import type { LinearGateway } from "@/linear/gateway";
 import { applyRunOutcome } from "@/linear/ticketActions";
 import { getRunWithTicket, markTerminal, recordPrLinkage } from "@/runs/service";
@@ -49,18 +51,31 @@ export async function handleComplete(req: Request, runId: string, deps: Complete
   if (body.prUrl) recordPrLinkage(deps.db, runId, body.prUrl, body.prMerged ? "merged" : "open");
   markTerminal(deps.db, runId, body.status === "success" ? "completed" : "failed", { result: body });
 
+  // The run is already durably terminal. Driving Linear is best-effort: if it
+  // fails (Linear down, bad mapping), we record the sync failure for operator
+  // follow-up but still return 200 — a non-2xx here would make the agent retry
+  // and double-apply the outcome. (The GitHub merge webhook in 1c also drives
+  // `done` independently, giving the key transition a second path.)
   const stateMap = resolveStateMap(deps.config, joined.ticket.linearTeamId);
+  let linearSynced = true;
   if (stateMap) {
-    await applyRunOutcome(deps.linear, {
-      issueId: joined.ticket.linearIssueId,
-      teamId: joined.ticket.linearTeamId,
-      stateMap,
-      needsHumanLabel: deps.config.orchestrationLabels.needsHuman,
-      outcome: body,
-    });
+    try {
+      await applyRunOutcome(deps.linear, {
+        issueId: joined.ticket.linearIssueId,
+        teamId: joined.ticket.linearTeamId,
+        stateMap,
+        needsHumanLabel: deps.config.orchestrationLabels.needsHuman,
+        outcome: body,
+      });
+    } catch (e) {
+      linearSynced = false;
+      const reason = `linear sync failed: ${(e as Error).message}`;
+      deps.db.update(runs).set({ failureReason: reason }).where(eq(runs.id, runId)).run();
+      console.error(`[complete] ${reason} (run ${runId})`);
+    }
   }
 
-  return new Response(JSON.stringify({ ok: true }), {
+  return new Response(JSON.stringify({ ok: true, linearSynced }), {
     status: 200,
     headers: { "content-type": "application/json" },
   });
