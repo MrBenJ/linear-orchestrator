@@ -1,7 +1,7 @@
 import { eq } from "drizzle-orm";
 import type { DB } from "@/db/client";
 import { tickets } from "@/db/schema";
-import { verifyLinearSignature } from "@/linear/webhook";
+import { verifyLinearSignature, isWebhookFresh } from "@/linear/webhook";
 
 export interface LinearWebhookDeps {
   db: DB;
@@ -15,11 +15,16 @@ export async function handleLinearWebhook(req: Request, deps: LinearWebhookDeps)
     return new Response("invalid signature", { status: 401 });
   }
 
-  let event: { type?: string; data?: { id?: string } };
+  let event: { type?: string; data?: { id?: string }; webhookTimestamp?: number };
   try {
     event = JSON.parse(rawBody);
   } catch {
     return new Response("ok", { status: 200 }); // acknowledge unparseable payloads
+  }
+
+  // Reject replays: a valid HMAC never expires, so require a fresh timestamp.
+  if (!isWebhookFresh(event.webhookTimestamp, Date.now())) {
+    return new Response("stale or missing webhook timestamp", { status: 400 });
   }
 
   // Phase 1a: for tracked issues we only log the transition for audit. No action.
