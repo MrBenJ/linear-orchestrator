@@ -1,0 +1,1 @@
+ALTER TABLE `runs` ADD `cancel_requested` integer DEFAULT 0 NOT NULL;

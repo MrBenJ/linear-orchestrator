@@ -30,6 +30,7 @@ export const runs = sqliteTable("runs", {
   prState: text("pr_state"),
   failureReason: text("failure_reason"),
   callbackToken: text("callback_token"),
+  cancelRequested: integer("cancel_requested").notNull().default(0),
   createdAt: integer("created_at").notNull(),
 });
 
