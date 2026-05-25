@@ -43,7 +43,7 @@ describe("full flow: intake -> worker -> complete -> merge -> done", () => {
           createWorktree: () => ({ worktreePath: "/wt/x", branchName: "lo/ENG-1-abcd1234" }),
           fetchOrigin: () => {},
           callbackBaseUrl: "http://localhost:3000/api/runs",
-          baseEnv: {},
+          baseEnv: {} as NodeJS.ProcessEnv,
         });
       },
     });
