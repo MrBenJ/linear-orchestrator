@@ -1,3 +1,5 @@
+import type { WorkflowState } from "@/linear/gateway";
+
 export interface ParsedArgs {
   cmd: string | undefined;
   arg: string | undefined;
@@ -28,4 +30,21 @@ export function formatRunsTable(runs: RunSummary[]): string {
 
 export function baseUrl(): string {
   return `http://localhost:${process.env.LO_PORT ?? "3000"}/api`;
+}
+
+export function parseLinearSubcommand(argv: string[]): {
+  sub: string | undefined;
+  teamId: string | undefined;
+} {
+  // argv like ["linear", "states", "team-1"]
+  return { sub: argv[1], teamId: argv[2] };
+}
+
+export function formatWorkflowStates(states: WorkflowState[]): string {
+  if (states.length === 0) return "(no workflow states)";
+  return states
+    .slice()
+    .sort((a, b) => a.position - b.position)
+    .map((s) => `${s.id}  ${s.type.padEnd(10)}  ${s.name}`)
+    .join("\n");
 }
