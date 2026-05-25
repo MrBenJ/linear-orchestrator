@@ -42,18 +42,27 @@ export async function handleGithubWebhook(req: Request, deps: GithubWebhookDeps)
     return new Response("ok", { status: 200 });
   }
 
-  markPrMerged(deps.db, found.run.id, merge.prUrl);
-
+  // Drive Linear FIRST, then persist prState=merged only on success. If the
+  // Linear update fails, we leave prState="open" and return 503 so GitHub
+  // redelivers — the guard above still passes on retry, so the ticket reaches
+  // `done` once Linear recovers. (Flipping to merged first would lock the retry
+  // out of the guard and strand the ticket in review.)
   const stateMap = resolveStateMap(deps.config, found.ticket.linearTeamId);
   if (stateMap) {
-    await applyRunOutcome(deps.linear, {
-      issueId: found.ticket.linearIssueId,
-      teamId: found.ticket.linearTeamId,
-      stateMap,
-      needsHumanLabel: deps.config.orchestrationLabels.needsHuman,
-      outcome: { status: "success", prMerged: true, prUrl: merge.prUrl },
-    });
+    try {
+      await applyRunOutcome(deps.linear, {
+        issueId: found.ticket.linearIssueId,
+        teamId: found.ticket.linearTeamId,
+        stateMap,
+        needsHumanLabel: deps.config.orchestrationLabels.needsHuman,
+        outcome: { status: "success", prMerged: true, prUrl: merge.prUrl },
+      });
+    } catch (e) {
+      console.error(`[github-webhook] Linear transition failed for run ${found.run.id}:`, e);
+      return new Response("linear update failed; please retry", { status: 503 });
+    }
   }
 
+  markPrMerged(deps.db, found.run.id, merge.prUrl);
   return new Response("ok", { status: 200 });
 }

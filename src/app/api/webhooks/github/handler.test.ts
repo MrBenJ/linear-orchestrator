@@ -86,6 +86,23 @@ describe("handleGithubWebhook", () => {
     expect(linear.stateUpdates).toEqual([]);
   });
 
+  it("does not mark merged if the Linear transition fails, so a retry still drives done", async () => {
+    const { db, runId, config, linear } = setup();
+    linear.failStateUpdate = true;
+
+    const res1 = await handleGithubWebhook(req(mergeEvent()), { db, config, linear, webhookSecret: secret });
+    expect(res1.status).toBe(503); // signal GitHub to retry
+    expect(linear.stateUpdates).toEqual([]);
+    expect(getRunWithTicket(db, runId)!.run.prState).toBe("open"); // not flipped — retry can re-enter
+
+    // GitHub redelivers; Linear is back.
+    linear.failStateUpdate = false;
+    const res2 = await handleGithubWebhook(req(mergeEvent()), { db, config, linear, webhookSecret: secret });
+    expect(res2.status).toBe(200);
+    expect(linear.stateUpdates).toEqual([{ issueId: "issue-1", stateId: "s-done" }]);
+    expect(getRunWithTicket(db, runId)!.run.prState).toBe("merged");
+  });
+
   it("acknowledges unmatched / non-merge events with 200 and does nothing", async () => {
     const { db, config, linear } = setup();
     const ping = { action: "closed", pull_request: { number: 99, merged: false, head: { ref: "other" } } };
