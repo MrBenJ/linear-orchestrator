@@ -1,5 +1,5 @@
 import { randomUUID } from "node:crypto";
-import { asc, eq, inArray } from "drizzle-orm";
+import { asc, desc, eq, inArray } from "drizzle-orm";
 import type { DB } from "@/db/client";
 import { tickets, runs } from "@/db/schema";
 
@@ -136,6 +136,24 @@ export function getRunWithTicket(db: DB, runId: string): RunWithTicket | undefin
   const ticket = db.select().from(tickets).where(eq(tickets.id, run.ticketId)).get();
   if (!ticket) return undefined;
   return { run, ticket };
+}
+
+export function findRunByBranch(db: DB, branchName: string): RunWithTicket | undefined {
+  const run = db
+    .select()
+    .from(runs)
+    .where(eq(runs.branchName, branchName))
+    .orderBy(desc(runs.createdAt))
+    .limit(1)
+    .get();
+  if (!run) return undefined;
+  const ticket = db.select().from(tickets).where(eq(tickets.id, run.ticketId)).get();
+  if (!ticket) return undefined;
+  return { run, ticket };
+}
+
+export function markPrMerged(db: DB, runId: string, prUrl: string): void {
+  recordPrLinkage(db, runId, prUrl, "merged");
 }
 
 /** Active (non-terminal) runs, oldest first. */
