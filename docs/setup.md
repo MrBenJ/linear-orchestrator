@@ -77,3 +77,19 @@ pnpm lo config
 > `spawn-helper`, which makes the worker fail with `posix_spawnp failed`. A
 > `postinstall` hook (`scripts/fix-node-pty-perms.mjs`) restores it automatically on
 > every `pnpm install`.
+
+## GitHub merge webhook + team bootstrap (Phase 1c)
+
+Register a GitHub webhook on each managed repo (or the org), `Content-Type: application/json`,
+secret = `GITHUB_WEBHOOK_SECRET`, events = **Pull requests**, pointing at
+`<tunnel>/api/webhooks/github`. On a `pull_request` merge, LO matches the run by its
+`lo/<id>-<short-run-id>` head branch and transitions the ticket to your mapped `done` state.
+
+Discover and write a team's workflow-state mapping (needs `LINEAR_API_KEY` in the env —
+unlike the Next.js server, `tsx bin/lo.ts` does not auto-load `.env.local`):
+
+```bash
+export $(grep -v '^#' .env.local | xargs)
+pnpm lo linear states <teamId>        # list states (id / type / name)
+pnpm lo linear bootstrap <teamId>     # propose + write stateMap into config.json
+```
