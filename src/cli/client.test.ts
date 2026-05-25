@@ -1,5 +1,10 @@
 import { describe, it, expect } from "vitest";
-import { formatRunsTable, parseArgs } from "./client";
+import {
+  formatRunsTable,
+  parseArgs,
+  parseLinearSubcommand,
+  formatWorkflowStates,
+} from "./client";
 
 describe("CLI helpers", () => {
   it("parses the command and positional arg", () => {
@@ -19,5 +24,21 @@ describe("CLI helpers", () => {
 
   it("formats an empty runs table", () => {
     expect(formatRunsTable([])).toContain("no active runs");
+  });
+});
+
+describe("linear subcommand parsing", () => {
+  it("parses the sub and teamId", () => {
+    expect(parseLinearSubcommand(["linear", "states", "team-1"])).toEqual({ sub: "states", teamId: "team-1" });
+    expect(parseLinearSubcommand(["linear", "bootstrap"])).toEqual({ sub: "bootstrap", teamId: undefined });
+  });
+});
+
+describe("formatWorkflowStates", () => {
+  it("renders id, type, and name", () => {
+    const out = formatWorkflowStates([{ id: "dev", name: "In Dev", type: "started", position: 2 }]);
+    expect(out).toContain("dev");
+    expect(out).toContain("started");
+    expect(out).toContain("In Dev");
   });
 });
