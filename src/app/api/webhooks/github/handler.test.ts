@@ -4,9 +4,17 @@ import { handleGithubWebhook } from "./handler";
 import { makeTestDb } from "../../../../../test/helpers/testDb";
 import { makeTestConfig } from "../../../../../test/helpers/testConfig";
 import { FakeLinearGateway } from "../../../../../test/helpers/fakeLinear";
-import { createTicketAndRun, claimNextQueuedRun, setWorktree, markTerminal, getRunWithTicket } from "@/runs/service";
+import {
+  createTicketAndRun,
+  claimNextQueuedRun,
+  setWorktree,
+  markTerminal,
+  recordPrLinkage,
+  getRunWithTicket,
+} from "@/runs/service";
 
 const secret = "gh-secret";
+const PR_URL = "https://github.com/o/r/pull/12";
 
 function setup() {
   const db = makeTestDb();
@@ -16,6 +24,8 @@ function setup() {
   });
   claimNextQueuedRun(db);
   setWorktree(db, runId, "/wt/x", "lo/ENG-1-abcd1234");
+  // Agent finished with an OPEN PR awaiting merge (parked in inReview).
+  recordPrLinkage(db, runId, PR_URL, "open");
   markTerminal(db, runId, "completed", { exitCode: 0 });
   return { db, runId, config: makeTestConfig(), linear: new FakeLinearGateway() };
 }
@@ -27,15 +37,22 @@ function req(body: unknown, sign = true): Request {
   return new Request("http://localhost/api/webhooks/github", { method: "POST", headers, body: raw });
 }
 
-const merged = {
-  action: "closed",
-  pull_request: { number: 12, merged: true, html_url: "https://github.com/o/r/pull/12", head: { ref: "lo/ENG-1-abcd1234" } },
-};
+function mergeEvent(opts: { branch?: string; number?: number; url?: string } = {}) {
+  return {
+    action: "closed",
+    pull_request: {
+      number: opts.number ?? 12,
+      merged: true,
+      html_url: opts.url ?? PR_URL,
+      head: { ref: opts.branch ?? "lo/ENG-1-abcd1234" },
+    },
+  };
+}
 
 describe("handleGithubWebhook", () => {
-  it("drives the matched ticket to done on a merged PR", async () => {
+  it("drives the matched ticket to done when the merge matches the run's open PR", async () => {
     const { db, runId, config, linear } = setup();
-    const res = await handleGithubWebhook(req(merged), { db, config, linear, webhookSecret: secret });
+    const res = await handleGithubWebhook(req(mergeEvent()), { db, config, linear, webhookSecret: secret });
     expect(res.status).toBe(200);
     expect(linear.stateUpdates).toEqual([{ issueId: "issue-1", stateId: "s-done" }]);
     expect(getRunWithTicket(db, runId)!.run.prState).toBe("merged");
@@ -43,8 +60,30 @@ describe("handleGithubWebhook", () => {
 
   it("rejects a bad signature with 401", async () => {
     const { db, config, linear } = setup();
-    const res = await handleGithubWebhook(req(merged, false), { db, config, linear, webhookSecret: secret });
+    const res = await handleGithubWebhook(req(mergeEvent(), false), { db, config, linear, webhookSecret: secret });
     expect(res.status).toBe(401);
+  });
+
+  it("ignores a branch match whose PR URL differs (wrong repo / wrong number)", async () => {
+    const { db, runId, config, linear } = setup();
+    const res = await handleGithubWebhook(
+      req(mergeEvent({ url: "https://github.com/evil/other/pull/12" })),
+      { db, config, linear, webhookSecret: secret },
+    );
+    expect(res.status).toBe(200);
+    expect(linear.stateUpdates).toEqual([]);
+    expect(getRunWithTicket(db, runId)!.run.prState).toBe("open");
+  });
+
+  it("ignores a merge for a run not in the open-PR state (e.g. already merged)", async () => {
+    const { db, config, linear } = setup();
+    // first merge drives done + flips prState to merged
+    await handleGithubWebhook(req(mergeEvent()), { db, config, linear, webhookSecret: secret });
+    linear.stateUpdates.length = 0;
+    // a duplicate merge event must not re-drive
+    const res = await handleGithubWebhook(req(mergeEvent()), { db, config, linear, webhookSecret: secret });
+    expect(res.status).toBe(200);
+    expect(linear.stateUpdates).toEqual([]);
   });
 
   it("acknowledges unmatched / non-merge events with 200 and does nothing", async () => {

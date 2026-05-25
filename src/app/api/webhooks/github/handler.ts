@@ -32,6 +32,16 @@ export async function handleGithubWebhook(req: Request, deps: GithubWebhookDeps)
   const found = findRunByBranch(deps.db, merge.branch);
   if (!found) return new Response("ok", { status: 200 }); // not an LO-managed PR
 
+  // Authorization boundary: the head-branch name alone is not a secret and can
+  // collide across repos (an org-level webhook / reused secret would otherwise
+  // let any matching-branch merge complete this ticket). Require the event to
+  // match the PR the agent actually reported for this run — an exact prUrl match
+  // pins both the repository and the PR number — and that the run is still
+  // awaiting merge (`open`), which also blocks duplicate/replayed merge events.
+  if (found.run.prState !== "open" || found.run.prUrl !== merge.prUrl) {
+    return new Response("ok", { status: 200 });
+  }
+
   markPrMerged(deps.db, found.run.id, merge.prUrl);
 
   const stateMap = resolveStateMap(deps.config, found.ticket.linearTeamId);
